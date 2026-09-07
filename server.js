@@ -9,10 +9,8 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-// 增加缓冲区限制到 50MB，防止数据包过大导致的连接断开
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-  maxHttpBufferSize: 5e7
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 const ADMIN_ACCOUNT = { user: "liusuoying2002", pass: "123321ABCabc" };
@@ -37,7 +35,7 @@ loadTemplates();
 function saveTemplatesToFile() {
   try {
     fs.writeFileSync(DATA_FILE, JSON.stringify(templates, null, 2), 'utf8');
-    console.log("模板数据写入磁盘成功！");
+    console.log("模板数据保存成功！");
   } catch (e) {
     console.error("写入持久化模板失败:", e);
   }
@@ -55,7 +53,7 @@ function getNextClientNumber(tplId) {
 
 io.on('connection', (socket) => {
 
-  // 1. 登录
+  // 1. 账号登录
   socket.on('admin_login', (data) => {
     if (data.user === ADMIN_ACCOUNT.user && data.pass === ADMIN_ACCOUNT.pass) {
       socket.join('admin_room');
@@ -97,7 +95,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 2. 模板配置
+  // 2. 模板配置增删改
   socket.on('create_template', (tplData) => {
     if (tplData && tplData.id) {
       templates[tplData.id] = tplData;
@@ -112,7 +110,6 @@ io.on('connection', (socket) => {
       templates[tplData.id] = { ...templates[tplData.id], ...tplData };
       saveTemplatesToFile();
 
-      // 实时同步更新
       io.to('admin_room').emit('init_templates_list', templates);
       io.to(`agent_${tplData.id}`).emit('template_updated', templates[tplData.id]);
     }
@@ -134,7 +131,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 3. 访客会话交互
+  // 3. 纯文本会话交互
   socket.on('client_init', (data) => {
     const tplId = (data && data.tplId) ? data.tplId : 'default';
     const userUuid = (data && data.userUuid) ? data.userUuid : socket.id;
@@ -165,7 +162,7 @@ io.on('connection', (socket) => {
       };
 
       if (config.welcome) {
-        client.messages.push({ sender: 'admin', msgType: 'text', text: config.welcome });
+        client.messages.push({ sender: 'admin', text: config.welcome });
       }
 
       clients[sessionKey] = client;
@@ -190,12 +187,7 @@ io.on('connection', (socket) => {
   socket.on('send_client_msg', (data) => {
     const sessionKey = `${data.userUuid}_${data.tplId}`;
     if (clients[sessionKey]) {
-      const msgObj = {
-        sender: 'client',
-        msgType: data.msgType || 'text',
-        text: data.msg,
-        fileName: data.fileName || ''
-      };
+      const msgObj = { sender: 'client', text: data.msg };
       clients[sessionKey].messages.push(msgObj);
       clients[sessionKey].unread = true;
 
@@ -209,12 +201,7 @@ io.on('connection', (socket) => {
   socket.on('send_admin_msg', (data) => {
     const sessionKey = data.sessionKey;
     if (clients[sessionKey]) {
-      const msgObj = {
-        sender: 'admin',
-        msgType: data.msgType || 'text',
-        text: data.msg,
-        fileName: data.fileName || ''
-      };
+      const msgObj = { sender: 'admin', text: data.msg };
       clients[sessionKey].messages.push(msgObj);
       if (clients[sessionKey].socketId) {
         io.to(clients[sessionKey].socketId).emit('receive_admin_msg', msgObj);
