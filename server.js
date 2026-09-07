@@ -9,7 +9,7 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  maxHttpBufferSize: 1e7
+  maxHttpBufferSize: 1e8 // 支持最大约 100MB 传输文件/图片
 });
 
 // 系统配置
@@ -30,7 +30,6 @@ io.on('connection', (socket) => {
 
   // ===== 1. 管理员/代理商 身份认证 =====
   
-  // 总管理员初始化
   socket.on('admin_login', (data) => {
     if (data.user === ADMIN_ACCOUNT.user && data.pass === ADMIN_ACCOUNT.pass) {
       socket.join('admin_room');
@@ -42,7 +41,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 代理商登录
   socket.on('agent_login', (data) => {
     let matchedTpl = null;
     for (let id in templates) {
@@ -137,7 +135,7 @@ io.on('connection', (socket) => {
       };
 
       if (config.welcome) {
-        client.messages.push({ sender: 'admin', text: config.welcome });
+        client.messages.push({ sender: 'admin', msgType: 'text', text: config.welcome });
       }
 
       clients[sessionKey] = client;
@@ -148,7 +146,6 @@ io.on('connection', (socket) => {
 
     socket.join(sessionKey);
 
-    // 将模板数据和当前已有的历史消息（包含打招呼语）一同下发给访客端
     socket.emit('init_template_data', {
       config: config,
       messages: client.messages
@@ -160,28 +157,42 @@ io.on('connection', (socket) => {
     notifyListUpdate(tplId);
   });
 
+  // 接收访客消息（支持图片/文件）
   socket.on('send_client_msg', (data) => {
     const sessionKey = `${data.userUuid}_${data.tplId}`;
     if (clients[sessionKey]) {
-      clients[sessionKey].messages.push({ sender: 'client', text: data.msg });
+      const msgObj = {
+        sender: 'client',
+        msgType: data.msgType || 'text',
+        text: data.msg,
+        fileName: data.fileName || ''
+      };
+      clients[sessionKey].messages.push(msgObj);
       clients[sessionKey].unread = true;
 
-      io.to('admin_room').emit('receive_client_msg', { sessionKey, msg: data.msg });
-      io.to(`agent_${data.tplId}`).emit('receive_client_msg', { sessionKey, msg: data.msg });
+      io.to('admin_room').emit('receive_client_msg', { sessionKey, msgObj });
+      io.to(`agent_${data.tplId}`).emit('receive_client_msg', { sessionKey, msgObj });
 
       notifyListUpdate(data.tplId);
     }
   });
 
+  // 接收客服消息（支持图片/文件）
   socket.on('send_admin_msg', (data) => {
     const sessionKey = data.sessionKey;
     if (clients[sessionKey]) {
-      clients[sessionKey].messages.push({ sender: 'admin', text: data.msg });
+      const msgObj = {
+        sender: 'admin',
+        msgType: data.msgType || 'text',
+        text: data.msg,
+        fileName: data.fileName || ''
+      };
+      clients[sessionKey].messages.push(msgObj);
       if (clients[sessionKey].socketId) {
-        io.to(clients[sessionKey].socketId).emit('receive_admin_msg', { msg: data.msg });
+        io.to(clients[sessionKey].socketId).emit('receive_admin_msg', msgObj);
       }
-      io.to('admin_room').emit('sync_admin_msg', { sessionKey, msg: data.msg });
-      io.to(`agent_${clients[sessionKey].tplId}`).emit('sync_admin_msg', { sessionKey, msg: data.msg });
+      io.to('admin_room').emit('sync_admin_msg', { sessionKey, msgObj });
+      io.to(`agent_${clients[sessionKey].tplId}`).emit('sync_admin_msg', { sessionKey, msgObj });
     }
   });
 
