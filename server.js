@@ -61,7 +61,6 @@ io.on('connection', (socket) => {
         tpl: matchedTpl 
       });
       
-      // 只推送该代理商模板下的访客列表
       const agentClients = {};
       for (let sKey in clients) {
         if (clients[sKey].tplId === matchedTpl.id) {
@@ -85,12 +84,10 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 编辑更新模板（保持 ID 与链接不变）
   socket.on('update_template', (tplData) => {
     if (tplData && tplData.id && templates[tplData.id]) {
       templates[tplData.id] = { ...templates[tplData.id], ...tplData };
       io.to('admin_room').emit('init_templates_list', templates);
-      // 通知对应代理商房间更新模板信息
       io.to(`agent_${tplData.id}`).emit('template_updated', templates[tplData.id]);
     }
   });
@@ -118,7 +115,10 @@ io.on('connection', (socket) => {
     const config = templates[tplId] || {
       id: 'default',
       title: '官方高级顾问',
-      welcome: '您好！请问有什么可以帮您？'
+      welcome: '您好！请问有什么可以帮您？',
+      statusText: '在线中',
+      placeholderText: '请输入内容...',
+      sendBtnText: '发送'
     };
 
     socket.emit('init_template_data', config);
@@ -149,7 +149,6 @@ io.on('connection', (socket) => {
 
     socket.join(sessionKey);
 
-    // 广播给总管理员和对应代理商
     io.to('admin_room').emit('client_joined', { client, sessionKey });
     io.to(`agent_${tplId}`).emit('client_joined', { client, sessionKey });
 
@@ -169,7 +168,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 客服（总管理员或代理商）发消息给访客
   socket.on('send_admin_msg', (data) => {
     const sessionKey = data.sessionKey;
     if (clients[sessionKey]) {
@@ -177,7 +175,6 @@ io.on('connection', (socket) => {
       if (clients[sessionKey].socketId) {
         io.to(clients[sessionKey].socketId).emit('receive_admin_msg', { msg: data.msg });
       }
-      // 保持管理员与代理商窗口双向同步
       io.to('admin_room').emit('sync_admin_msg', { sessionKey, msg: data.msg });
       io.to(`agent_${clients[sessionKey].tplId}`).emit('sync_admin_msg', { sessionKey, msg: data.msg });
     }
@@ -205,12 +202,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 辅助函数：根据模板推送更新列表
   function notifyListUpdate(tplId) {
-    // 推送全量给总管理员
     io.to('admin_room').emit('update_client_list', clients);
 
-    // 推送局域列表给对应代理商
     const agentClients = {};
     for (let sKey in clients) {
       if (clients[sKey].tplId === tplId) {
