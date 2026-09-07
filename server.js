@@ -11,25 +11,30 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  maxHttpBufferSize: 1e8 // 支持约 100MB 传输文件/图片
+  maxHttpBufferSize: 1e8 // 支持约 100MB 传输数据
 });
 
-// 系统基础配置
 const ADMIN_ACCOUNT = { user: "liusuoying2002", pass: "123321ABCabc" };
 const DATA_FILE = path.join(__dirname, 'templates.json');
 
-// 从本地 JSON 文件读取模板数据（持久化）
+// 从本地 JSON 读取模板
 let templates = {};
-if (fs.existsSync(DATA_FILE)) {
-  try {
-    templates = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-  } catch (e) {
-    templates = {};
+try {
+  if (fs.existsSync(DATA_FILE)) {
+    const rawData = fs.readFileSync(DATA_FILE, 'utf8');
+    templates = JSON.parse(rawData);
   }
+} catch (e) {
+  console.error("读取持久化模板失败:", e);
+  templates = {};
 }
 
 function saveTemplatesToFile() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(templates, null, 2), 'utf8');
+  try {
+    fs.writeFileSync(DATA_FILE, JSON.stringify(templates, null, 2), 'utf8');
+  } catch (e) {
+    console.error("写入持久化模板失败:", e);
+  }
 }
 
 const clients = {}; 
@@ -87,7 +92,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ===== 2. 模板配置增删改（支持持久化） =====
+  // ===== 2. 模板配置管理 =====
 
   socket.on('create_template', (tplData) => {
     if (tplData && tplData.id) {
@@ -100,7 +105,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('update_template', (tplData) => {
-    if (tplData && tplData.id && templates[tplData.id]) {
+    if (tplData && tplData.id) {
       templates[tplData.id] = { ...templates[tplData.id], ...tplData };
       saveTemplatesToFile();
 
@@ -110,17 +115,19 @@ io.on('connection', (socket) => {
   });
 
   socket.on('delete_template', (tplId) => {
-    delete templates[tplId];
-    delete templateCounters[tplId];
-    saveTemplatesToFile();
+    if (templates[tplId]) {
+      delete templates[tplId];
+      delete templateCounters[tplId];
+      saveTemplatesToFile();
 
-    for (let sessionKey in clients) {
-      if (clients[sessionKey].tplId === tplId) {
-        delete clients[sessionKey];
+      for (let sessionKey in clients) {
+        if (clients[sessionKey].tplId === tplId) {
+          delete clients[sessionKey];
+        }
       }
+      io.to('admin_room').emit('init_templates_list', templates);
+      io.to('admin_room').emit('update_client_list', clients);
     }
-    io.to('admin_room').emit('init_templates_list', templates);
-    io.to('admin_room').emit('update_client_list', clients);
   });
 
   // ===== 3. 访客会话交互 =====
