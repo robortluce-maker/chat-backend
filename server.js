@@ -2,6 +2,8 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -9,14 +11,28 @@ app.use(cors());
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
-  maxHttpBufferSize: 1e8 // 支持最大约 100MB 传输文件/图片
+  maxHttpBufferSize: 1e8 // 支持约 100MB 传输文件/图片
 });
 
-// 系统配置
+// 系统基础配置
 const ADMIN_ACCOUNT = { user: "liusuoying2002", pass: "123321ABCabc" };
+const DATA_FILE = path.join(__dirname, 'templates.json');
 
-const templates = {}; // tplId -> templateData
-const clients = {};   // sessionKey -> clientData
+// 从本地 JSON 文件读取模板数据（持久化）
+let templates = {};
+if (fs.existsSync(DATA_FILE)) {
+  try {
+    templates = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+  } catch (e) {
+    templates = {};
+  }
+}
+
+function saveTemplatesToFile() {
+  fs.writeFileSync(DATA_FILE, JSON.stringify(templates, null, 2), 'utf8');
+}
+
+const clients = {}; 
 const templateCounters = {};
 
 function getNextClientNumber(tplId) {
@@ -28,8 +44,8 @@ function getNextClientNumber(tplId) {
 
 io.on('connection', (socket) => {
 
-  // ===== 1. 管理员/代理商 身份认证 =====
-  
+  // ===== 1. 管理员 / 代理商登录 =====
+
   socket.on('admin_login', (data) => {
     if (data.user === ADMIN_ACCOUNT.user && data.pass === ADMIN_ACCOUNT.pass) {
       socket.join('admin_room');
@@ -71,13 +87,14 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ===== 2. 模板增删改 =====
+  // ===== 2. 模板配置增删改（支持持久化） =====
 
   socket.on('create_template', (tplData) => {
     if (tplData && tplData.id) {
       templates[tplData.id] = tplData;
       templateCounters[tplData.id] = 1;
-      io.to('admin_room').emit('template_created', tplData);
+      saveTemplatesToFile();
+
       io.to('admin_room').emit('init_templates_list', templates);
     }
   });
@@ -85,6 +102,8 @@ io.on('connection', (socket) => {
   socket.on('update_template', (tplData) => {
     if (tplData && tplData.id && templates[tplData.id]) {
       templates[tplData.id] = { ...templates[tplData.id], ...tplData };
+      saveTemplatesToFile();
+
       io.to('admin_room').emit('init_templates_list', templates);
       io.to(`agent_${tplData.id}`).emit('template_updated', templates[tplData.id]);
     }
@@ -93,12 +112,13 @@ io.on('connection', (socket) => {
   socket.on('delete_template', (tplId) => {
     delete templates[tplId];
     delete templateCounters[tplId];
+    saveTemplatesToFile();
+
     for (let sessionKey in clients) {
       if (clients[sessionKey].tplId === tplId) {
         delete clients[sessionKey];
       }
     }
-    io.to('admin_room').emit('template_deleted', tplId);
     io.to('admin_room').emit('init_templates_list', templates);
     io.to('admin_room').emit('update_client_list', clients);
   });
@@ -157,7 +177,6 @@ io.on('connection', (socket) => {
     notifyListUpdate(tplId);
   });
 
-  // 接收访客消息（支持图片/文件）
   socket.on('send_client_msg', (data) => {
     const sessionKey = `${data.userUuid}_${data.tplId}`;
     if (clients[sessionKey]) {
@@ -177,7 +196,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 接收客服消息（支持图片/文件）
   socket.on('send_admin_msg', (data) => {
     const sessionKey = data.sessionKey;
     if (clients[sessionKey]) {
@@ -232,4 +250,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`后端已在端口 ${PORT} 启动`));
+server.listen(PORT, () => console.log(`后端服务在端口 ${PORT} 启动`));
