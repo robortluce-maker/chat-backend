@@ -173,15 +173,22 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 修复：管理员/代理商发送消息逻辑
   socket.on('send_admin_msg', (data) => {
     const sessionKey = data.sessionKey;
     if (clients[sessionKey]) {
       clients[sessionKey].messages.push({ sender: 'admin', text: data.msg });
+      
       if (clients[sessionKey].socketId) {
         io.to(clients[sessionKey].socketId).emit('receive_admin_msg', { msg: data.msg });
       }
+
+      // 同步消息给所有后台
       io.to('admin_room').emit('sync_admin_msg', { sessionKey, msg: data.msg });
       io.to(`agent_${clients[sessionKey].tplId}`).emit('sync_admin_msg', { sessionKey, msg: data.msg });
+
+      // 关键修复：发送后通知后台列表及数据更新
+      notifyListUpdate(clients[sessionKey].tplId);
     }
   });
 
