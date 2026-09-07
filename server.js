@@ -13,7 +13,7 @@ const io = new Server(server, {
 });
 
 const templates = {};
-const clients = {}; // 按 userUuid 存储客户信息
+const clients = {}; // 存储 key 为 "userUuid_tplId" 的客户实例
 let clientCounter = 1;
 
 io.on('connection', (socket) => {
@@ -33,13 +33,23 @@ io.on('connection', (socket) => {
 
   socket.on('delete_template', (tplId) => {
     delete templates[tplId];
+    // 同时清理该模板下的所有访客数据
+    for (let sessionKey in clients) {
+      if (clients[sessionKey].tplId === tplId) {
+        delete clients[sessionKey];
+      }
+    }
     io.to('admin_room').emit('template_deleted', tplId);
+    io.to('admin_room').emit('update_client_list', clients);
   });
 
-  // 访客连接初始化（通过 userUuid 识别老访客）
+  // 访客连接初始化
   socket.on('client_init', (data) => {
     const tplId = (data && data.tplId) ? data.tplId : 'default';
     const userUuid = (data && data.userUuid) ? data.userUuid : socket.id;
+
+    // 生成当前用户在这个模板下的“唯一标识会话 Key”
+    const sessionKey = `${userUuid}_${tplId}`;
 
     const config = templates[tplId] || {
       id: 'default',
@@ -49,79 +59,85 @@ io.on('connection', (socket) => {
 
     socket.emit('init_template_data', config);
 
-    let client = clients[userUuid];
+    let client = clients[sessionKey];
 
     if (!client) {
-      // 全新访客：分配新编号
+      // 场景 A：该用户在这个新模板下是“新访客” -> 分配在该模板下的新编号
       client = {
+        sessionKey: sessionKey,
         uuid: userUuid,
         socketId: socket.id,
         name: `访客 ${clientCounter++}`,
         tplId: tplId,
         tag: '',
-        unread: true, // 标注未读状态以亮灯
+        unread: true,
         messages: []
       };
-      clients[userUuid] = client;
+      clients[sessionKey] = client;
     } else {
-      // 老访客重连：更新 Socket ID 和模板
+      // 场景 B：该用户在这个模板下是“老访客” -> 重用原本的编号和记录
       client.socketId = socket.id;
-      client.tplId = tplId;
-      client.unread = true; // 重新打开页面标记未读
+      client.unread = true; // 再次进来点亮未读绿灯
     }
 
-    // 将预设打招呼放入历史记录
+    // 每次进入自动加入对应欢迎语消息
     if (config.welcome) {
       client.messages.push({ sender: 'admin', text: config.welcome });
     }
 
-    socket.join(userUuid);
+    // 绑定 Socket 到这个唯一的 sessionKey 房间
+    socket.join(sessionKey);
 
-    // 通知管理员有新访客上线/重新访问，触发声音与绿灯
-    io.to('admin_room').emit('client_joined', { client, uuid: userUuid });
+    // 通知管理员有访客上线
+    io.to('admin_room').emit('client_joined', { client, sessionKey });
     io.to('admin_room').emit('update_client_list', clients);
   });
 
+  // 收到客户端发送的消息
   socket.on('send_client_msg', (data) => {
-    const userUuid = data.userUuid;
-    if (clients[userUuid]) {
-      clients[userUuid].messages.push({ sender: 'client', text: data.msg });
-      clients[userUuid].unread = true;
+    const sessionKey = `${data.userUuid}_${data.tplId}`;
+    if (clients[sessionKey]) {
+      clients[sessionKey].messages.push({ sender: 'client', text: data.msg });
+      clients[sessionKey].unread = true;
 
       io.to('admin_room').emit('receive_client_msg', {
-        uuid: userUuid,
+        sessionKey: sessionKey,
         msg: data.msg
       });
       io.to('admin_room').emit('update_client_list', clients);
     }
   });
 
+  // 客服后台发送消息
   socket.on('send_admin_msg', (data) => {
-    const userUuid = data.uuid;
-    if (clients[userUuid]) {
-      clients[userUuid].messages.push({ sender: 'admin', text: data.msg });
-      if (clients[userUuid].socketId) {
-        io.to(clients[userUuid].socketId).emit('receive_admin_msg', { msg: data.msg });
+    const sessionKey = data.sessionKey;
+    if (clients[sessionKey]) {
+      clients[sessionKey].messages.push({ sender: 'admin', text: data.msg });
+      if (clients[sessionKey].socketId) {
+        io.to(clients[sessionKey].socketId).emit('receive_admin_msg', { msg: data.msg });
       }
     }
   });
 
-  socket.on('mark_read', (uuid) => {
-    if (clients[uuid]) {
-      clients[uuid].unread = false;
+  // 消除未读小绿灯
+  socket.on('mark_read', (sessionKey) => {
+    if (clients[sessionKey]) {
+      clients[sessionKey].unread = false;
       io.to('admin_room').emit('update_client_list', clients);
     }
   });
 
+  // 更新备注标记
   socket.on('update_client_tag', (data) => {
-    if (clients[data.uuid]) {
-      clients[data.uuid].tag = data.tag;
+    if (clients[data.sessionKey]) {
+      clients[data.sessionKey].tag = data.tag;
       io.to('admin_room').emit('update_client_list', clients);
     }
   });
 
-  socket.on('delete_client', (uuid) => {
-    delete clients[uuid];
+  // 删除单个访客
+  socket.on('delete_client', (sessionKey) => {
+    delete clients[sessionKey];
     io.to('admin_room').emit('update_client_list', clients);
   });
 });
