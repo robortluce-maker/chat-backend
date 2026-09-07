@@ -12,10 +12,11 @@ const io = new Server(server, {
   maxHttpBufferSize: 1e7
 });
 
-const templates = {};
-const clients = {}; // 存储 key 为 "userUuid_tplId" 的客户实例
+// 系统配置
+const ADMIN_ACCOUNT = { user: "liusuoying2002", pass: "123321ABCabc" };
 
-// 为每个模板创建独立的编号计数器
+const templates = {}; // tplId -> templateData
+const clients = {};   // sessionKey -> clientData
 const templateCounters = {};
 
 function getNextClientNumber(tplId) {
@@ -27,18 +28,70 @@ function getNextClientNumber(tplId) {
 
 io.on('connection', (socket) => {
 
-  socket.on('admin_init', () => {
-    socket.join('admin_room');
-    socket.emit('update_client_list', clients);
-    socket.emit('init_templates_list', templates);
+  // ===== 1. 管理员/代理商 身份认证 =====
+  
+  // 总管理员初始化
+  socket.on('admin_login', (data) => {
+    if (data.user === ADMIN_ACCOUNT.user && data.pass === ADMIN_ACCOUNT.pass) {
+      socket.join('admin_room');
+      socket.emit('login_result', { success: true, role: 'admin' });
+      socket.emit('update_client_list', clients);
+      socket.emit('init_templates_list', templates);
+    } else {
+      socket.emit('login_result', { success: false, msg: '总管理员账号或密码错误！' });
+    }
   });
+
+  // 代理商登录
+  socket.on('agent_login', (data) => {
+    let matchedTpl = null;
+    for (let id in templates) {
+      if (templates[id].agentUser === data.user && templates[id].agentPass === data.pass) {
+        matchedTpl = templates[id];
+        break;
+      }
+    }
+
+    if (matchedTpl) {
+      const roomName = `agent_${matchedTpl.id}`;
+      socket.join(roomName);
+      socket.emit('login_result', { 
+        success: true, 
+        role: 'agent', 
+        tpl: matchedTpl 
+      });
+      
+      // 只推送该代理商模板下的访客列表
+      const agentClients = {};
+      for (let sKey in clients) {
+        if (clients[sKey].tplId === matchedTpl.id) {
+          agentClients[sKey] = clients[sKey];
+        }
+      }
+      socket.emit('update_client_list', agentClients);
+    } else {
+      socket.emit('login_result', { success: false, msg: '代理商账号或密码错误！' });
+    }
+  });
+
+  // ===== 2. 模板增删改 =====
 
   socket.on('create_template', (tplData) => {
     if (tplData && tplData.id) {
       templates[tplData.id] = tplData;
-      // 初始化该新模板的计数器从 1 开始
       templateCounters[tplData.id] = 1;
       io.to('admin_room').emit('template_created', tplData);
+      io.to('admin_room').emit('init_templates_list', templates);
+    }
+  });
+
+  // 编辑更新模板（保持 ID 与链接不变）
+  socket.on('update_template', (tplData) => {
+    if (tplData && tplData.id && templates[tplData.id]) {
+      templates[tplData.id] = { ...templates[tplData.id], ...tplData };
+      io.to('admin_room').emit('init_templates_list', templates);
+      // 通知对应代理商房间更新模板信息
+      io.to(`agent_${tplData.id}`).emit('template_updated', templates[tplData.id]);
     }
   });
 
@@ -51,14 +104,15 @@ io.on('connection', (socket) => {
       }
     }
     io.to('admin_room').emit('template_deleted', tplId);
+    io.to('admin_room').emit('init_templates_list', templates);
     io.to('admin_room').emit('update_client_list', clients);
   });
 
-  // 访客连接初始化
+  // ===== 3. 访客会话交互 =====
+
   socket.on('client_init', (data) => {
     const tplId = (data && data.tplId) ? data.tplId : 'default';
     const userUuid = (data && data.userUuid) ? data.userUuid : socket.id;
-
     const sessionKey = `${userUuid}_${tplId}`;
 
     const config = templates[tplId] || {
@@ -72,9 +126,7 @@ io.on('connection', (socket) => {
     let client = clients[sessionKey];
 
     if (!client) {
-      // 获取当前模板独有的自增编号（每个模板都从 1 开始）
       const clientNum = getNextClientNumber(tplId);
-
       client = {
         sessionKey: sessionKey,
         uuid: userUuid,
@@ -87,7 +139,6 @@ io.on('connection', (socket) => {
       };
       clients[sessionKey] = client;
     } else {
-      // 老访客重连，保留原本在该模板下的编号和消息
       client.socketId = socket.id;
       client.unread = true;
     }
@@ -98,8 +149,11 @@ io.on('connection', (socket) => {
 
     socket.join(sessionKey);
 
+    // 广播给总管理员和对应代理商
     io.to('admin_room').emit('client_joined', { client, sessionKey });
-    io.to('admin_room').emit('update_client_list', clients);
+    io.to(`agent_${tplId}`).emit('client_joined', { client, sessionKey });
+
+    notifyListUpdate(tplId);
   });
 
   socket.on('send_client_msg', (data) => {
@@ -108,14 +162,14 @@ io.on('connection', (socket) => {
       clients[sessionKey].messages.push({ sender: 'client', text: data.msg });
       clients[sessionKey].unread = true;
 
-      io.to('admin_room').emit('receive_client_msg', {
-        sessionKey: sessionKey,
-        msg: data.msg
-      });
-      io.to('admin_room').emit('update_client_list', clients);
+      io.to('admin_room').emit('receive_client_msg', { sessionKey, msg: data.msg });
+      io.to(`agent_${data.tplId}`).emit('receive_client_msg', { sessionKey, msg: data.msg });
+
+      notifyListUpdate(data.tplId);
     }
   });
 
+  // 客服（总管理员或代理商）发消息给访客
   socket.on('send_admin_msg', (data) => {
     const sessionKey = data.sessionKey;
     if (clients[sessionKey]) {
@@ -123,27 +177,48 @@ io.on('connection', (socket) => {
       if (clients[sessionKey].socketId) {
         io.to(clients[sessionKey].socketId).emit('receive_admin_msg', { msg: data.msg });
       }
+      // 保持管理员与代理商窗口双向同步
+      io.to('admin_room').emit('sync_admin_msg', { sessionKey, msg: data.msg });
+      io.to(`agent_${clients[sessionKey].tplId}`).emit('sync_admin_msg', { sessionKey, msg: data.msg });
     }
   });
 
   socket.on('mark_read', (sessionKey) => {
     if (clients[sessionKey]) {
       clients[sessionKey].unread = false;
-      io.to('admin_room').emit('update_client_list', clients);
+      notifyListUpdate(clients[sessionKey].tplId);
     }
   });
 
   socket.on('update_client_tag', (data) => {
     if (clients[data.sessionKey]) {
       clients[data.sessionKey].tag = data.tag;
-      io.to('admin_room').emit('update_client_list', clients);
+      notifyListUpdate(clients[data.sessionKey].tplId);
     }
   });
 
   socket.on('delete_client', (sessionKey) => {
-    delete clients[sessionKey];
-    io.to('admin_room').emit('update_client_list', clients);
+    if (clients[sessionKey]) {
+      const tplId = clients[sessionKey].tplId;
+      delete clients[sessionKey];
+      notifyListUpdate(tplId);
+    }
   });
+
+  // 辅助函数：根据模板推送更新列表
+  function notifyListUpdate(tplId) {
+    // 推送全量给总管理员
+    io.to('admin_room').emit('update_client_list', clients);
+
+    // 推送局域列表给对应代理商
+    const agentClients = {};
+    for (let sKey in clients) {
+      if (clients[sKey].tplId === tplId) {
+        agentClients[sKey] = clients[sKey];
+      }
+    }
+    io.to(`agent_${tplId}`).emit('update_client_list', agentClients);
+  }
 });
 
 const PORT = process.env.PORT || 3000;
