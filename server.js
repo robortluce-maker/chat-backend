@@ -10,8 +10,7 @@ app.use(cors());
 
 const server = http.createServer(app);
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-  maxHttpBufferSize: 1e8 // 支持约 100MB 传输数据
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 const ADMIN_ACCOUNT = { user: "liusuoying2002", pass: "123321ABCabc" };
@@ -19,19 +18,24 @@ const DATA_FILE = path.join(__dirname, 'templates.json');
 
 // 从本地 JSON 读取模板
 let templates = {};
-try {
-  if (fs.existsSync(DATA_FILE)) {
-    const rawData = fs.readFileSync(DATA_FILE, 'utf8');
-    templates = JSON.parse(rawData);
+function loadTemplates() {
+  try {
+    if (fs.existsSync(DATA_FILE)) {
+      const rawData = fs.readFileSync(DATA_FILE, 'utf8');
+      templates = JSON.parse(rawData);
+      console.log("成功读取持久化模板数据：", Object.keys(templates));
+    }
+  } catch (e) {
+    console.error("读取持久化模板失败:", e);
+    templates = {};
   }
-} catch (e) {
-  console.error("读取持久化模板失败:", e);
-  templates = {};
 }
+loadTemplates();
 
 function saveTemplatesToFile() {
   try {
     fs.writeFileSync(DATA_FILE, JSON.stringify(templates, null, 2), 'utf8');
+    console.log("模板数据保存成功！");
   } catch (e) {
     console.error("写入持久化模板失败:", e);
   }
@@ -49,8 +53,7 @@ function getNextClientNumber(tplId) {
 
 io.on('connection', (socket) => {
 
-  // ===== 1. 管理员 / 代理商登录 =====
-
+  // 1. 登录
   socket.on('admin_login', (data) => {
     if (data.user === ADMIN_ACCOUNT.user && data.pass === ADMIN_ACCOUNT.pass) {
       socket.join('admin_room');
@@ -92,14 +95,12 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ===== 2. 模板配置管理 =====
-
+  // 2. 模板配置
   socket.on('create_template', (tplData) => {
     if (tplData && tplData.id) {
       templates[tplData.id] = tplData;
       templateCounters[tplData.id] = 1;
       saveTemplatesToFile();
-
       io.to('admin_room').emit('init_templates_list', templates);
     }
   });
@@ -109,6 +110,7 @@ io.on('connection', (socket) => {
       templates[tplData.id] = { ...templates[tplData.id], ...tplData };
       saveTemplatesToFile();
 
+      // 实时广播给管理员和代理商
       io.to('admin_room').emit('init_templates_list', templates);
       io.to(`agent_${tplData.id}`).emit('template_updated', templates[tplData.id]);
     }
@@ -130,8 +132,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  // ===== 3. 访客会话交互 =====
-
+  // 3. 访客会话交互
   socket.on('client_init', (data) => {
     const tplId = (data && data.tplId) ? data.tplId : 'default';
     const userUuid = (data && data.userUuid) ? data.userUuid : socket.id;
