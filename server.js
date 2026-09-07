@@ -7,22 +7,16 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
-
-// 允许跨域并提高数据传输上限到 10MB
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  },
-  maxHttpBufferSize: 1e7 
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  maxHttpBufferSize: 1e7
 });
 
 const templates = {};
 const clients = {};
+let clientCounter = 1;
 
 io.on('connection', (socket) => {
-  console.log('用户连接:', socket.id);
-
   socket.on('admin_init', () => {
     socket.join('admin_room');
     socket.emit('update_client_list', clients);
@@ -32,9 +26,13 @@ io.on('connection', (socket) => {
   socket.on('create_template', (tplData) => {
     if (tplData && tplData.id) {
       templates[tplData.id] = tplData;
-      console.log('成功保存模板:', tplData.id);
       io.to('admin_room').emit('template_created', tplData);
     }
+  });
+
+  socket.on('delete_template', (tplId) => {
+    delete templates[tplId];
+    io.to('admin_room').emit('template_deleted', tplId);
   });
 
   socket.on('client_init', (data) => {
@@ -47,10 +45,14 @@ io.on('connection', (socket) => {
     
     socket.emit('init_template_data', config);
 
+    // 自动为访客编号，并在消息记录里预置打招呼内容
+    const clientName = `访客 ${clientCounter++}`;
     clients[socket.id] = {
       id: socket.id,
+      name: clientName,
       tplId: tplId,
-      messages: []
+      tag: '',
+      messages: config.welcome ? [{ sender: 'admin', text: config.welcome }] : []
     };
 
     io.to('admin_room').emit('update_client_list', clients);
@@ -73,6 +75,18 @@ io.on('connection', (socket) => {
     io.to(data.clientId).emit('receive_admin_msg', { msg: data.msg });
   });
 
+  socket.on('update_client_tag', (data) => {
+    if (clients[data.clientId]) {
+      clients[data.clientId].tag = data.tag;
+      io.to('admin_room').emit('update_client_list', clients);
+    }
+  });
+
+  socket.on('delete_client', (clientId) => {
+    delete clients[clientId];
+    io.to('admin_room').emit('update_client_list', clients);
+  });
+
   socket.on('disconnect', () => {
     if (clients[socket.id]) {
       delete clients[socket.id];
@@ -82,4 +96,4 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`运行在端口 ${PORT}`));
+server.listen(PORT, () => console.log(`后端已在端口 ${PORT} 启动`));
