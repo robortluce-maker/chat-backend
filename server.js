@@ -9,8 +9,10 @@ const app = express();
 app.use(cors());
 
 const server = http.createServer(app);
+// 增加缓冲区限制到 50MB，防止数据包过大导致的连接断开
 const io = new Server(server, {
-  cors: { origin: "*", methods: ["GET", "POST"] }
+  cors: { origin: "*", methods: ["GET", "POST"] },
+  maxHttpBufferSize: 5e7
 });
 
 const ADMIN_ACCOUNT = { user: "liusuoying2002", pass: "123321ABCabc" };
@@ -35,7 +37,7 @@ loadTemplates();
 function saveTemplatesToFile() {
   try {
     fs.writeFileSync(DATA_FILE, JSON.stringify(templates, null, 2), 'utf8');
-    console.log("模板数据保存成功！");
+    console.log("模板数据写入磁盘成功！");
   } catch (e) {
     console.error("写入持久化模板失败:", e);
   }
@@ -110,7 +112,7 @@ io.on('connection', (socket) => {
       templates[tplData.id] = { ...templates[tplData.id], ...tplData };
       saveTemplatesToFile();
 
-      // 实时广播给管理员和代理商
+      // 实时同步更新
       io.to('admin_room').emit('init_templates_list', templates);
       io.to(`agent_${tplData.id}`).emit('template_updated', templates[tplData.id]);
     }
