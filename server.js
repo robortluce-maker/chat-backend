@@ -121,8 +121,6 @@ io.on('connection', (socket) => {
       sendBtnText: '发送'
     };
 
-    socket.emit('init_template_data', config);
-
     let client = clients[sessionKey];
 
     if (!client) {
@@ -137,17 +135,24 @@ io.on('connection', (socket) => {
         unread: true,
         messages: []
       };
+
+      if (config.welcome) {
+        client.messages.push({ sender: 'admin', text: config.welcome });
+      }
+
       clients[sessionKey] = client;
     } else {
       client.socketId = socket.id;
       client.unread = true;
     }
 
-    if (config.welcome) {
-      client.messages.push({ sender: 'admin', text: config.welcome });
-    }
-
     socket.join(sessionKey);
+
+    // 将模板数据和当前已有的历史消息（包含打招呼语）一同下发给访客端
+    socket.emit('init_template_data', {
+      config: config,
+      messages: client.messages
+    });
 
     io.to('admin_room').emit('client_joined', { client, sessionKey });
     io.to(`agent_${tplId}`).emit('client_joined', { client, sessionKey });
