@@ -14,7 +14,16 @@ const io = new Server(server, {
 
 const templates = {};
 const clients = {}; // 存储 key 为 "userUuid_tplId" 的客户实例
-let clientCounter = 1;
+
+// 为每个模板创建独立的编号计数器
+const templateCounters = {};
+
+function getNextClientNumber(tplId) {
+  if (!templateCounters[tplId]) {
+    templateCounters[tplId] = 1;
+  }
+  return templateCounters[tplId]++;
+}
 
 io.on('connection', (socket) => {
 
@@ -27,13 +36,15 @@ io.on('connection', (socket) => {
   socket.on('create_template', (tplData) => {
     if (tplData && tplData.id) {
       templates[tplData.id] = tplData;
+      // 初始化该新模板的计数器从 1 开始
+      templateCounters[tplData.id] = 1;
       io.to('admin_room').emit('template_created', tplData);
     }
   });
 
   socket.on('delete_template', (tplId) => {
     delete templates[tplId];
-    // 同时清理该模板下的所有访客数据
+    delete templateCounters[tplId];
     for (let sessionKey in clients) {
       if (clients[sessionKey].tplId === tplId) {
         delete clients[sessionKey];
@@ -48,7 +59,6 @@ io.on('connection', (socket) => {
     const tplId = (data && data.tplId) ? data.tplId : 'default';
     const userUuid = (data && data.userUuid) ? data.userUuid : socket.id;
 
-    // 生成当前用户在这个模板下的“唯一标识会话 Key”
     const sessionKey = `${userUuid}_${tplId}`;
 
     const config = templates[tplId] || {
@@ -62,12 +72,14 @@ io.on('connection', (socket) => {
     let client = clients[sessionKey];
 
     if (!client) {
-      // 场景 A：该用户在这个新模板下是“新访客” -> 分配在该模板下的新编号
+      // 获取当前模板独有的自增编号（每个模板都从 1 开始）
+      const clientNum = getNextClientNumber(tplId);
+
       client = {
         sessionKey: sessionKey,
         uuid: userUuid,
         socketId: socket.id,
-        name: `访客 ${clientCounter++}`,
+        name: `访客 ${clientNum}`,
         tplId: tplId,
         tag: '',
         unread: true,
@@ -75,25 +87,21 @@ io.on('connection', (socket) => {
       };
       clients[sessionKey] = client;
     } else {
-      // 场景 B：该用户在这个模板下是“老访客” -> 重用原本的编号和记录
+      // 老访客重连，保留原本在该模板下的编号和消息
       client.socketId = socket.id;
-      client.unread = true; // 再次进来点亮未读绿灯
+      client.unread = true;
     }
 
-    // 每次进入自动加入对应欢迎语消息
     if (config.welcome) {
       client.messages.push({ sender: 'admin', text: config.welcome });
     }
 
-    // 绑定 Socket 到这个唯一的 sessionKey 房间
     socket.join(sessionKey);
 
-    // 通知管理员有访客上线
     io.to('admin_room').emit('client_joined', { client, sessionKey });
     io.to('admin_room').emit('update_client_list', clients);
   });
 
-  // 收到客户端发送的消息
   socket.on('send_client_msg', (data) => {
     const sessionKey = `${data.userUuid}_${data.tplId}`;
     if (clients[sessionKey]) {
@@ -108,7 +116,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 客服后台发送消息
   socket.on('send_admin_msg', (data) => {
     const sessionKey = data.sessionKey;
     if (clients[sessionKey]) {
@@ -119,7 +126,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 消除未读小绿灯
   socket.on('mark_read', (sessionKey) => {
     if (clients[sessionKey]) {
       clients[sessionKey].unread = false;
@@ -127,7 +133,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 更新备注标记
   socket.on('update_client_tag', (data) => {
     if (clients[data.sessionKey]) {
       clients[data.sessionKey].tag = data.tag;
@@ -135,7 +140,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // 删除单个访客
   socket.on('delete_client', (sessionKey) => {
     delete clients[sessionKey];
     io.to('admin_room').emit('update_client_list', clients);
